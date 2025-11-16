@@ -1,7 +1,6 @@
 import os
 import asyncio
 import discord
-from discord import app_commands
 from typing import Optional
 
 from src.aclient import discordClient
@@ -297,6 +296,101 @@ def run_discord_bot():
             ephemeral=False
         )
 
+    @discordClient.tree.command(name="join", description="Join your voice channel")
+    async def join(interaction: discord.Interaction):
+        """Join the user's current voice channel"""
+        # Check if voice is enabled
+        if not discordClient.voice_manager.enabled:
+            await interaction.response.send_message(
+                "❌ Voice features are currently disabled. Set VOICE_ENABLED=True in .env to enable.",
+                ephemeral=True
+            )
+            return
+        
+        # Check if user is in a voice channel
+        if not interaction.user.voice or not interaction.user.voice.channel:
+            await interaction.response.send_message(
+                "❌ You need to be in a voice channel first!",
+                ephemeral=True
+            )
+            return
+        
+        # Check if already connected
+        if discordClient.voice_manager.is_connected(interaction.guild.id):
+            await interaction.response.send_message(
+                "⚠️ Already connected to a voice channel in this server!",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer()
+        
+        # Join the channel
+        success = await discordClient.voice_manager.join_voice_channel(interaction.user.voice.channel)
+        
+        if success:
+            await interaction.followup.send(
+                f"✅ Joined {interaction.user.voice.channel.name}! I'm now listening for voice input."
+            )
+        else:
+            await interaction.followup.send(
+                "❌ Failed to join voice channel. Check logs for details."
+            )
+    
+    @discordClient.tree.command(name="leave", description="Leave the voice channel")
+    async def leave(interaction: discord.Interaction):
+        """Leave the current voice channel"""
+        if not discordClient.voice_manager.is_connected(interaction.guild.id):
+            await interaction.response.send_message(
+                "❌ Not connected to any voice channel!",
+                ephemeral=True
+            )
+            return
+        
+        await interaction.response.defer()
+        
+        success = await discordClient.voice_manager.leave_voice_channel(interaction.guild.id)
+        
+        if success:
+            await interaction.followup.send("👋 Left the voice channel!")
+        else:
+            await interaction.followup.send("❌ Failed to leave voice channel.")
+    
+    @discordClient.tree.command(name="voicestatus", description="Show voice connection status")
+    async def voicestatus(interaction: discord.Interaction):
+        """Show the current voice status"""
+        status = discordClient.voice_manager.get_status(interaction.guild.id)
+        
+        embed = discord.Embed(
+            title="🎙️ Voice Status",
+            color=discord.Color.green() if status["connected"] else discord.Color.red()
+        )
+        
+        embed.add_field(name="Enabled", value="✅ Yes" if status["enabled"] else "❌ No", inline=True)
+        embed.add_field(name="Auto Join", value="✅ Yes" if status["auto_join"] else "❌ No", inline=True)
+        embed.add_field(name="Connected", value="✅ Yes" if status["connected"] else "❌ No", inline=True)
+        
+        if status["connected"]:
+            embed.add_field(name="Channel", value=status["channel"], inline=False)
+            embed.add_field(name="Recording", value="✅ Yes" if status["recording"] else "❌ No", inline=True)
+            embed.add_field(name="Playing", value="🔊 Yes" if status["playing"] else "❌ No", inline=True)
+            embed.add_field(name="Listening", value="👂 Yes" if status.get("listening", True) else "🔇 No (speaking)", inline=True)
+        
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+    
+    @discordClient.tree.command(name="togglevoice", description="Toggle voice features on/off")
+    async def togglevoice(interaction: discord.Interaction):
+        """Toggle voice features"""
+        discordClient.voice_manager.enabled = not discordClient.voice_manager.enabled
+        
+        status = "enabled" if discordClient.voice_manager.enabled else "disabled"
+        emoji = "✅" if discordClient.voice_manager.enabled else "❌"
+        
+        await interaction.response.send_message(
+            f"{emoji} Voice features are now **{status}**!",
+            ephemeral=False
+        )
+
     @discordClient.tree.command(name="help", description="Show all available commands")
     async def help(interaction: discord.Interaction):
         embed = discord.Embed(
@@ -316,6 +410,12 @@ def run_discord_bot():
             ]),
             ("🎨 **Image Generation**", [
                 ("/draw [prompt]", "Generate an image from text")
+            ]),
+            ("🎙️ **Voice Commands**", [
+                ("/join", "Join your current voice channel"),
+                ("/leave", "Leave the voice channel"),
+                ("/voicestatus", "Show voice connection status"),
+                ("/togglevoice", "Toggle voice features on/off")
             ]),
             ("🎭 **Personas**", [
                 ("/switchpersona [name]", "Change AI personality"),
@@ -337,6 +437,16 @@ def run_discord_bot():
         embed.add_field(
             name="📊 Current Settings",
             value=f"**Provider:** {info['provider']}\n**Model:** {info['current_model']}",
+            inline=False
+        )
+        
+        # Add voice status
+        voice_status = discordClient.voice_manager.get_status(interaction.guild.id)
+        voice_info = f"**Enabled:** {'Yes' if voice_status['enabled'] else 'No'}\n"
+        voice_info += f"**Connected:** {'Yes' if voice_status['connected'] else 'No'}"
+        embed.add_field(
+            name="🎙️ Voice Status",
+            value=voice_info,
             inline=False
         )
         

@@ -137,6 +137,12 @@ Image generation is now integrated with the provider system:
 * `/reset` - Clear conversation history
 * `/help` - Display all available commands
 
+### Voice Commands
+* `/join` - Join your current voice channel
+* `/leave` - Leave the voice channel
+* `/voicestatus` - Show voice connection status
+* `/togglevoice` - Toggle voice features on/off
+
 ### Persona Commands
 * `/switchpersona [persona]` - Switch AI personality (admin-only for jailbreaks)
    * `standard` - Standard helpful assistant
@@ -151,6 +157,76 @@ Image generation is now integrated with the provider system:
 * `/private` - Bot replies only visible to command user
 * `/public` - Bot replies visible to everyone (default)
 * `/replyall` - Bot responds to all messages in channel (toggle)
+
+## Voice Channel Features
+
+The bot can now join voice channels and interact with users through voice! It automatically joins when users enter a voice channel and leaves when everyone exits.
+
+### Features
+* **Automatic Join**: Bot automatically joins voice channels when users join
+* **Voice Activity Detection**: Processes audio when user stops speaking
+* **Turn-Based Conversation**: Bot ignores user audio while speaking (prevents interruptions)
+* **Audio Processing**: Uses OpenAI's gpt-audio model for audio-to-audio responses
+* **Fallback Support**: Falls back to Whisper + GPT + TTS if gpt-audio unavailable
+
+### Configuration
+
+Add these environment variables to your `.env` file:
+
+```env
+# Voice Features
+VOICE_ENABLED=True                    # Enable/disable voice features (default: True)
+VOICE_AUTO_JOIN=True                  # Auto-join when users join channels (default: True)
+VOICE_SILENCE_DURATION=1.5            # Seconds of silence before processing (default: 1.5)
+AUDIO_SAMPLE_RATE=48000               # Audio quality setting (default: 48000)
+```
+
+### Requirements
+
+Voice features require additional dependencies:
+* **discord-ext-voice-recv** - Voice recording extension for discord.py
+* **PyNaCl** - Discord voice support
+* **pydub** - Audio processing
+* **FFmpeg** - Audio codec (must be installed on system)
+
+All dependencies are in `requirements.txt`:
+
+```bash
+pip install -r requirements.txt
+```
+
+Install FFmpeg:
+* **Windows**: Download from https://ffmpeg.org/ and add to PATH
+* **Linux**: `sudo apt install ffmpeg`
+* **macOS**: `brew install ffmpeg`
+
+### Usage
+
+1. Make sure `VOICE_ENABLED=True` in your `.env` file
+2. The bot will automatically join voice channels when users join (if `VOICE_AUTO_JOIN=True`)
+3. Speak into your microphone - the bot listens continuously
+4. When you stop speaking (1.5s silence), it processes your audio
+5. The bot responds with audio in the voice channel
+
+Alternatively, use `/join` to manually connect to your current voice channel.
+
+### Technical Details
+
+The implementation uses:
+* **OpenAI gpt-audio model** via `/v1/completions` API for audio-to-audio processing
+* **Opus decoder** - Decodes Discord's Opus audio to PCM/WAV format
+* **discord-ext-voice-recv** - Captures voice data from Discord
+* **Multiple API format approaches** - The exact API format is flexible to accommodate future changes
+* **Fallback pipeline** - If gpt-audio is unavailable, uses Whisper (transcription) + GPT (response) + TTS (speech)
+
+**Audio Pipeline**:
+1. Users speak → Discord captures Opus audio (48kHz stereo)
+2. Bot decodes Opus to PCM and converts to WAV
+3. WAV sent to OpenAI gpt-audio model
+4. Audio response played back via FFmpeg
+
+**Note**: The gpt-audio model format with v1/completions is not fully documented in public OpenAI docs. The implementation includes flexible stubs that can be adjusted when the exact API format is confirmed.
+
 ## Security Features
 
 ### Admin-Only Jailbreak Access

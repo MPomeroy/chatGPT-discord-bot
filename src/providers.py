@@ -316,6 +316,7 @@ class OpenAIProvider(BaseProvider):
                     model=model,
                     input=input_data,
                     conversation=conversation_id,
+                    # reasoning={"effort": "medium"},
                     **kwargs
                 )
 

@@ -7,6 +7,8 @@ from typing import List, Dict, Optional
 from src import personas
 from src.log import logger
 from src.providers import ProviderManager, ProviderType, ModelInfo
+from src.voice_manager import VoiceManager
+from src.audio_provider import get_audio_provider
 from utils.message_utils import send_split_message
 
 from dotenv import load_dotenv
@@ -19,6 +21,7 @@ class DiscordClient(discord.Client):
     def __init__(self) -> None:
         intents = discord.Intents.default()
         intents.message_content = True
+        intents.voice_states = True  # Enable voice state tracking
         super().__init__(intents=intents)
         
         self.tree = app_commands.CommandTree(self)
@@ -41,10 +44,17 @@ class DiscordClient(discord.Client):
         self.current_channel = None
         self.current_persona = "standard"
         
+        # Voice management
+        self.voice_manager = VoiceManager(self)
+        
+        # Initialize audio provider if OpenAI key is available
+        audio_provider = get_audio_provider()
+        self.voice_manager.set_audio_provider(audio_provider)
+        
         # Bot settings
         self.activity = discord.Activity(
             type=discord.ActivityType.listening, 
-            name="/chat | /help | /provider"
+            name="/chat | /help | /provider | /join"
         )
         self.isPrivate = False
         self.is_replying_all = os.getenv("REPLYING_ALL", "False") == "True"
@@ -65,6 +75,9 @@ class DiscordClient(discord.Client):
     
     async def process_messages(self):
         """Process queued messages"""
+        # Start voice manager processing
+        await self.voice_manager.start_processing()
+        
         while True:
             if self.current_channel is not None:
                 while not self.message_queue.empty():
@@ -273,6 +286,10 @@ class DiscordClient(discord.Client):
             provider = self.provider_manager.get_provider()
             models = provider.get_available_models()
             self.current_model = models[0].name if models else "auto"
+    
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """Handle voice state updates"""
+        await self.voice_manager.on_voice_state_update(member, before, after)
 
 
 # Create singleton instance
