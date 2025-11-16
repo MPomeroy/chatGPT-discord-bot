@@ -91,16 +91,20 @@ class DiscordClient(discord.Client):
             author = message.author.id
         
         try:
-            # Extract image URLs from attachments
+            # Extract image and file URLs from attachments
             image_urls = []
+            file_urls = []
             if hasattr(message, 'attachments') and message.attachments:
                 for attachment in message.attachments:
-                    # Check if attachment is an image
+                    # Separate images from other files
                     if attachment.content_type and attachment.content_type.startswith('image/'):
                         image_urls.append(attachment.url)
                         logger.info(f"Found image attachment: {attachment.url}")
+                    else:
+                        file_urls.append(attachment.url)
+                        logger.info(f"Found file attachment: {attachment.filename} ({attachment.url})")
             
-            response = await self.handle_response(user_message, message.channel.id, image_urls=image_urls)
+            response = await self.handle_response(user_message, message.channel.id, image_urls=image_urls, file_urls=file_urls)
             response_content = f'{response}'
             await send_split_message(self, response_content, message)
         except Exception as e:
@@ -128,16 +132,31 @@ class DiscordClient(discord.Client):
         except Exception as e:
             logger.exception(f"Error while sending system prompt: {e}")
     
-    async def handle_response(self, user_message: str, channel_id: str, image_urls: Optional[List[str]] = None) -> str:
+    async def handle_response(self, user_message: str, channel_id: str, image_urls: Optional[List[str]] = None, file_urls: Optional[List[str]] = None) -> str:
         """Generate response using current provider"""
-        # Add user message to history (with images if present)
-        if image_urls:
-            # Multi-modal format for messages with images
+        # Add user message to history (with images and files if present)
+        if image_urls or file_urls:
+            # Multi-modal format for messages with attachments
             content = [{'type': 'input_text', 'text': user_message}]
-            for image_url in image_urls:
-                content.append({'type': 'input_image', 'image_url': image_url})
+            
+            # Add images
+            if image_urls:
+                for image_url in image_urls:
+                    content.append({'type': 'input_image', 'image_url': image_url})
+            
+            # Add files
+            if file_urls:
+                for file_url in file_urls:
+                    content.append({'type': 'input_file', 'file_url': file_url})
+            
             self.conversation_history.append({'role': 'user', 'content': content})
-            logger.info(f"Added message with {len(image_urls)} image(s) to history")
+            
+            attachment_summary = []
+            if image_urls:
+                attachment_summary.append(f"{len(image_urls)} image(s)")
+            if file_urls:
+                attachment_summary.append(f"{len(file_urls)} file(s)")
+            logger.info(f"Added message with {', '.join(attachment_summary)} to history")
         else:
             # Simple text format for text-only messages
             self.conversation_history.append({'role': 'user', 'content': user_message})
@@ -170,6 +189,7 @@ class DiscordClient(discord.Client):
                 messages=self.conversation_history,
                 model=self.current_model if self.current_model != "auto" else None,
                 image_urls=image_urls,
+                file_urls=file_urls,
             )
             
             # Add to history

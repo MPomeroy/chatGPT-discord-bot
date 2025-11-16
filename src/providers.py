@@ -280,18 +280,34 @@ class OpenAIProvider(BaseProvider):
                 # Get or create conversation for this channel
                 conversation_id = await self.get_or_create_conversation(channel_id)
 
-                # Extract image_urls from kwargs if present
+                # Extract image_urls and file_urls from kwargs if present
                 image_urls = kwargs.pop('image_urls', None)
+                file_urls = kwargs.pop('file_urls', None)
                 
-                # Format input based on whether images are present
-                if image_urls:
-                    # Multi-modal format with images
+                # Format input based on whether attachments are present
+                if image_urls or file_urls:
+                    # Multi-modal format with attachments
                     input_content = [{"type": "input_text", "text": new_message}]
-                    for image_url in image_urls:
-                        input_content.append({"type": "input_image", "image_url": image_url})
+                    
+                    # Add images
+                    if image_urls:
+                        for image_url in image_urls:
+                            input_content.append({"type": "input_image", "image_url": image_url})
+                    
+                    # Add files
+                    if file_urls:
+                        for file_url in file_urls:
+                            input_content.append({"type": "input_file", "file_url": file_url})
                     
                     input_data = [{"role": "user", "content": input_content}]
-                    logger.info(f"Sending message with {len(image_urls)} image(s) to OpenAI")
+                    
+                    # Build logging summary
+                    attachment_summary = []
+                    if image_urls:
+                        attachment_summary.append(f"{len(image_urls)} image(s)")
+                    if file_urls:
+                        attachment_summary.append(f"{len(file_urls)} file(s)")
+                    logger.info(f"Sending message with {', '.join(attachment_summary)} to OpenAI")
                 else:
                     # Simple text format
                     input_data = new_message
