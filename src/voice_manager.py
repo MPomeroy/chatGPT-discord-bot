@@ -6,7 +6,8 @@ import wave
 import base64
 import time
 import struct
-from typing import Dict, Optional, List
+import webrtcvad
+from typing import Dict, Optional, List, Tuple
 from collections import defaultdict
 from src.log import logger
 
@@ -100,6 +101,12 @@ class VoiceManager:
         self.auto_join = os.getenv("VOICE_AUTO_JOIN", "True") == "True"
         self.sample_rate = int(os.getenv("AUDIO_SAMPLE_RATE", "48000"))
         self.audio_provider = None  # Will be set after initialization
+        
+        # Voice Activity Detection (VAD) settings
+        self.vad = webrtcvad.Vad(2)  # Aggressiveness: 0-3 (2 = moderate)
+        self.vad_speech_confidence_threshold = float(os.getenv("VAD_SPEECH_CONFIDENCE", "0.6"))  # 60% of frames must be speech
+        self.vad_min_speech_duration = float(os.getenv("VAD_MIN_SPEECH_DURATION", "0.5"))  # 0.5 seconds minimum
+        logger.info(f"VAD initialized: confidence threshold={self.vad_speech_confidence_threshold}, min duration={self.vad_min_speech_duration}s")
         
         # Start background task to process audio buffers
         self.processing_task = None
@@ -325,6 +332,137 @@ class VoiceManager:
             except Exception as e:
                 logger.error(f"Error in audio buffer processing: {e}")
     
+    def _analyze_audio_for_speech(self, wav_data: bytes) -> Tuple[bool, float, float]:
+        """
+        Analyze audio using WebRTC VAD to determine if it contains speech.
+        
+        Args:
+            wav_data: Audio data in WAV format
+            
+        Returns:
+            Tuple of (has_speech, confidence, speech_duration):
+            - has_speech: True if audio passes speech thresholds
+            - confidence: Percentage of frames containing speech (0.0 to 1.0)
+            - speech_duration: Total duration of speech in seconds
+        """
+        try:
+            # Read WAV data
+            wav_io = io.BytesIO(wav_data)
+            with wave.open(wav_io, 'rb') as wav_file:
+                sample_rate = wav_file.getframerate()
+                num_channels = wav_file.getnchannels()
+                sample_width = wav_file.getsampwidth()
+                pcm_data = wav_file.readframes(wav_file.getnframes())
+            
+            # WebRTC VAD requires 16kHz, mono, 16-bit PCM
+            # Convert if necessary
+            if sample_rate != 16000 or num_channels != 1 or sample_width != 2:
+                logger.debug(f"Converting audio: {sample_rate}Hz, {num_channels}ch, {sample_width*8}bit -> 16kHz, mono, 16bit")
+                pcm_data = self._convert_audio_for_vad(pcm_data, sample_rate, num_channels, sample_width)
+                sample_rate = 16000
+            
+            # WebRTC VAD supports frame durations of 10, 20, or 30ms
+            # We'll use 30ms frames for better accuracy
+            frame_duration_ms = 30
+            frame_size = int(sample_rate * frame_duration_ms / 1000) * 2  # *2 for 16-bit samples
+            
+            # Process audio in frames
+            num_frames = len(pcm_data) // frame_size
+            speech_frames = 0
+            
+            for i in range(num_frames):
+                frame = pcm_data[i * frame_size:(i + 1) * frame_size]
+                
+                # VAD requires exact frame size
+                if len(frame) != frame_size:
+                    continue
+                
+                try:
+                    is_speech = self.vad.is_speech(frame, sample_rate)
+                    if is_speech:
+                        speech_frames += 1
+                except Exception as e:
+                    logger.debug(f"VAD frame processing error: {e}")
+                    continue
+            
+            # Calculate metrics
+            if num_frames == 0:
+                return False, 0.0, 0.0
+            
+            confidence = speech_frames / num_frames
+            total_duration = (num_frames * frame_duration_ms) / 1000.0
+            speech_duration = (speech_frames * frame_duration_ms) / 1000.0
+            
+            # Check thresholds
+            has_speech = (
+                confidence >= self.vad_speech_confidence_threshold and
+                speech_duration >= self.vad_min_speech_duration
+            )
+            
+            logger.debug(f"VAD Analysis: {speech_frames}/{num_frames} frames ({confidence*100:.1f}% confidence, {speech_duration:.2f}s speech)")
+            
+            return has_speech, confidence, speech_duration
+            
+        except Exception as e:
+            logger.error(f"Error analyzing audio for speech: {e}")
+            # On error, default to accepting the audio (fail open)
+            return True, 1.0, 1.0
+    
+    def _convert_audio_for_vad(self, pcm_data: bytes, sample_rate: int, num_channels: int, sample_width: int) -> bytes:
+        """
+        Convert audio to format required by WebRTC VAD (16kHz, mono, 16-bit PCM).
+        
+        Args:
+            pcm_data: Raw PCM audio data
+            sample_rate: Current sample rate
+            num_channels: Current number of channels
+            sample_width: Current sample width in bytes
+            
+        Returns:
+            Converted PCM data in 16kHz, mono, 16-bit format
+        """
+        try:
+            # Convert to mono if stereo
+            if num_channels == 2:
+                # Simple stereo to mono: average left and right channels
+                samples = []
+                for i in range(0, len(pcm_data), sample_width * 2):
+                    left = int.from_bytes(pcm_data[i:i+sample_width], byteorder='little', signed=True)
+                    right = int.from_bytes(pcm_data[i+sample_width:i+sample_width*2], byteorder='little', signed=True)
+                    mono = (left + right) // 2
+                    samples.append(mono)
+                pcm_data = b''.join(mono.to_bytes(sample_width, byteorder='little', signed=True) for mono in samples)
+            
+            # Resample to 16kHz if needed
+            if sample_rate != 16000:
+                # Simple resampling: linear interpolation
+                ratio = 16000 / sample_rate
+                num_samples = len(pcm_data) // sample_width
+                new_num_samples = int(num_samples * ratio)
+                
+                samples = [int.from_bytes(pcm_data[i:i+sample_width], byteorder='little', signed=True) 
+                          for i in range(0, len(pcm_data), sample_width)]
+                
+                # Linear interpolation
+                resampled = []
+                for i in range(new_num_samples):
+                    src_pos = i / ratio
+                    src_idx = int(src_pos)
+                    if src_idx + 1 < len(samples):
+                        frac = src_pos - src_idx
+                        sample = int(samples[src_idx] * (1 - frac) + samples[src_idx + 1] * frac)
+                    else:
+                        sample = samples[-1]
+                    resampled.append(sample)
+                
+                pcm_data = b''.join(sample.to_bytes(2, byteorder='little', signed=True) for sample in resampled)
+            
+            return pcm_data
+            
+        except Exception as e:
+            logger.error(f"Error converting audio for VAD: {e}")
+            return pcm_data
+    
     async def _process_user_audio(self, guild_id: int, user_id: int, buffer: AudioBuffer):
         """Process audio from a user"""
         if not self.audio_provider:
@@ -349,6 +487,17 @@ class VoiceManager:
                 return
             
             logger.info(f"Converted to WAV: {len(wav_data)} bytes")
+            
+            # Analyze audio for speech using VAD
+            has_speech, confidence, speech_duration = self._analyze_audio_for_speech(wav_data)
+            
+            if not has_speech:
+                logger.info(f"Audio from user {user_id} filtered by VAD: "
+                           f"confidence={confidence*100:.1f}%, speech_duration={speech_duration:.2f}s "
+                           f"(thresholds: {self.vad_speech_confidence_threshold*100:.0f}%, {self.vad_min_speech_duration}s)")
+                return
+            
+            logger.info(f"Audio passed VAD filters: confidence={confidence*100:.1f}%, speech_duration={speech_duration:.2f}s")
             
             # Send to audio provider for processing
             response_audio = await self.audio_provider.process_audio(wav_data)
