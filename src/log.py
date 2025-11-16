@@ -40,9 +40,9 @@ def setup_logger(module_name:str) -> logging.Logger:
     # create logger
     library, _, _ = module_name.partition('.py')
     logger = logging.getLogger(library)
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
 
-    log_level = "INFO"
+    log_level = "DEBUG"
     level = logging.getLevelName(log_level.upper())
 
     # create console handler

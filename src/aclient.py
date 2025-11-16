@@ -147,6 +147,7 @@ class DiscordClient(discord.Client):
     
     async def handle_response(self, user_message: str, channel_id: str, image_urls: Optional[List[str]] = None, file_urls: Optional[List[str]] = None) -> str:
         """Generate response using current provider"""
+        logger.debug(f"handle_response called for channel {channel_id}")
         # Add user message to history (with images and files if present)
         if image_urls or file_urls:
             # Multi-modal format for messages with attachments
@@ -208,10 +209,14 @@ class DiscordClient(discord.Client):
             # Add to history
             self.conversation_history.append({'role': 'assistant', 'content': response})
             
+            logger.debug(f"handle_response returning response for channel {channel_id}")
             return response
             
         except Exception as e:
             logger.error(f"Provider error: {e}")
+            # Return a user-friendly error message instead of None
+            error_response = "❌ I'm having trouble processing your request right now. Please try again in a moment."
+            return error_response
             # Try fallback to free provider
             # if self.provider_manager.current_provider != ProviderType.FREE:
             #     logger.info("Falling back to free provider")

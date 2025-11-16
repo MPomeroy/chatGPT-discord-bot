@@ -273,57 +273,89 @@ class OpenAIProvider(BaseProvider):
     async def chat_completion(self, messages: List[Dict[str, str]], model: str, new_message: str, channel_id: str, **kwargs) -> str:
         use_response_api = True
         if use_response_api:
-            try:
-                if not model:
-                    model = "gpt-5.1"
-
-                # Get or create conversation for this channel
-                conversation_id = await self.get_or_create_conversation(channel_id)
-
-                # Extract image_urls and file_urls from kwargs if present
-                image_urls = kwargs.pop('image_urls', None)
-                file_urls = kwargs.pop('file_urls', None)
-                
-                # Format input based on whether attachments are present
-                if image_urls or file_urls:
-                    # Multi-modal format with attachments
-                    input_content = [{"type": "input_text", "text": new_message}]
+            # Retry logic for conversation_locked errors
+            max_retries = 5
+            retry_delay = 2  # seconds
+            
+            # Extract image_urls and file_urls from kwargs once before the loop
+            image_urls = kwargs.pop('image_urls', None)
+            file_urls = kwargs.pop('file_urls', None)
+            
+            if not model:
+                model = "gpt-5.1"
+            
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    logger.debug(f"API call attempt {attempt + 1}/{max_retries} for channel {channel_id}")
                     
-                    # Add images
-                    if image_urls:
-                        for image_url in image_urls:
-                            input_content.append({"type": "input_image", "image_url": image_url})
+                    # Get or create conversation for this channel
+                    conversation_id = await self.get_or_create_conversation(channel_id)
                     
-                    # Add files
-                    if file_urls:
-                        for file_url in file_urls:
-                            input_content.append({"type": "input_file", "file_url": file_url})
-                    
-                    input_data = [{"role": "user", "content": input_content}]
-                    
-                    # Build logging summary
-                    attachment_summary = []
-                    if image_urls:
-                        attachment_summary.append(f"{len(image_urls)} image(s)")
-                    if file_urls:
-                        attachment_summary.append(f"{len(file_urls)} file(s)")
-                    logger.info(f"Sending message with {', '.join(attachment_summary)} to OpenAI")
-                else:
-                    # Simple text format
-                    input_data = new_message
+                    # Format input based on whether attachments are present
+                    if image_urls or file_urls:
+                        # Multi-modal format with attachments
+                        input_content = [{"type": "input_text", "text": new_message}]
+                        
+                        # Add images
+                        if image_urls:
+                            for image_url in image_urls:
+                                input_content.append({"type": "input_image", "image_url": image_url})
+                        
+                        # Add files
+                        if file_urls:
+                            for file_url in file_urls:
+                                input_content.append({"type": "input_file", "file_url": file_url})
+                        
+                        input_data = [{"role": "user", "content": input_content}]
+                        
+                        # Build logging summary
+                        attachment_summary = []
+                        if image_urls:
+                            attachment_summary.append(f"{len(image_urls)} image(s)")
+                        if file_urls:
+                            attachment_summary.append(f"{len(file_urls)} file(s)")
+                        logger.info(f"Sending message with {', '.join(attachment_summary)} to OpenAI")
+                    else:
+                        # Simple text format
+                        input_data = new_message
 
-                response = await self.client.responses.create(
-                    model=model,
-                    input=input_data,
-                    conversation=conversation_id,
-                    # reasoning={"effort": "medium"},
-                    **kwargs
-                )
+                    response = await self.client.responses.create(
+                        model=model,
+                        input=input_data,
+                        conversation=conversation_id,
+                        # reasoning={"effort": "medium"},
+                        **kwargs
+                    )
 
-                return response.output[0].content[0].text
-            except Exception as e:
-                logger.error(f"OpenAI provider error: {e}")
-                raise
+                    # Success! Return immediately
+                    result = response.output[0].content[0].text
+                    logger.debug(f"API call successful on attempt {attempt + 1}, returning response")
+                    return result
+                    
+                except Exception as e:
+                    error_str = str(e)
+                    last_error = e
+                    
+                    # Check if it's a conversation_locked error
+                    if "conversation_locked" in error_str.lower() or "another process is currently operating" in error_str.lower():
+                        if attempt < max_retries - 1:
+                            logger.info(f"Conversation locked, retrying in {retry_delay} seconds... (attempt {attempt + 1}/{max_retries})")
+                            await asyncio.sleep(retry_delay)
+                            # Continue to next iteration
+                        else:
+                            # Max retries reached for conversation_locked
+                            logger.error(f"OpenAI provider error after {max_retries} retries: {e}")
+                            raise
+                    else:
+                        # For other errors, don't retry - raise immediately
+                        logger.error(f"OpenAI provider error: {e}")
+                        raise
+            
+            # If we get here, all retries were exhausted (shouldn't happen with current logic)
+            if last_error:
+                raise last_error
+            raise Exception("Unexpected error: retry loop completed without success or error")
         else:
             if not model:
                 model = "gpt-5.1"
