@@ -91,7 +91,7 @@ class DiscordClient(discord.Client):
             author = message.author.id
         
         try:
-            response = await self.handle_response(user_message)
+            response = await self.handle_response(user_message, message.channel.id)
             response_content = f'> **{user_message}** - <@{str(author)}> \n\n{response}'
             await send_split_message(self, response_content, message)
         except Exception as e:
@@ -110,7 +110,7 @@ class DiscordClient(discord.Client):
                 channel = self.get_channel(int(discord_channel_id))
                 logger.info(f"Send system prompt with size {len(self.starting_prompt)}")
                 
-                response = await self.handle_response(self.starting_prompt)
+                response = await self.handle_response(self.starting_prompt, discord_channel_id)
                 await channel.send(f"{response}")
                 
                 logger.info(f"System prompt response: {response}")
@@ -119,7 +119,7 @@ class DiscordClient(discord.Client):
         except Exception as e:
             logger.exception(f"Error while sending system prompt: {e}")
     
-    async def handle_response(self, user_message: str) -> str:
+    async def handle_response(self, user_message: str, channel_id: str) -> str:
         """Generate response using current provider"""
         # Add user message to history
         self.conversation_history.append({'role': 'user', 'content': user_message})
@@ -147,8 +147,10 @@ class DiscordClient(discord.Client):
         try:
             # Generate response
             response = await provider.chat_completion(
+                channel_id=channel_id,
+                new_message=user_message,
                 messages=self.conversation_history,
-                model=self.current_model if self.current_model != "auto" else None
+                model=self.current_model if self.current_model != "auto" else None,
             )
             
             # Add to history
@@ -159,27 +161,27 @@ class DiscordClient(discord.Client):
         except Exception as e:
             logger.error(f"Provider error: {e}")
             # Try fallback to free provider
-            if self.provider_manager.current_provider != ProviderType.FREE:
-                logger.info("Falling back to free provider")
-                try:
-                    free_provider = self.provider_manager.get_provider(ProviderType.FREE)
-                    response = await free_provider.chat_completion(
-                        messages=self.conversation_history,
-                        model=None
-                    )
-                    self.conversation_history.append({'role': 'assistant', 'content': response})
-                    return f"{response}\n\n*⚠️ Fallback to free provider due to error*"
-                except Exception as fallback_error:
-                    logger.error(f"Fallback provider also failed: {fallback_error}")
-                    # Return user-friendly error message
-                    error_response = "❌ I'm having trouble processing your request right now. Please try again later or contact an administrator."
-                    self.conversation_history.append({'role': 'assistant', 'content': error_response})
-                    return error_response
-            else:
-                # Already using free provider, return error
-                error_response = "❌ The free provider is currently unavailable. Please try again later."
-                self.conversation_history.append({'role': 'assistant', 'content': error_response})
-                return error_response
+            # if self.provider_manager.current_provider != ProviderType.FREE:
+            #     logger.info("Falling back to free provider")
+            #     try:
+            #         free_provider = self.provider_manager.get_provider(ProviderType.FREE)
+            #         response = await free_provider.chat_completion(
+            #             messages=self.conversation_history,
+            #             model=None
+            #         )
+            #         self.conversation_history.append({'role': 'assistant', 'content': response})
+            #         return f"{response}\n\n*⚠️ Fallback to free provider due to error*"
+            #     except Exception as fallback_error:
+            #         logger.error(f"Fallback provider also failed: {fallback_error}")
+            #         # Return user-friendly error message
+            #         error_response = "❌ I'm having trouble processing your request right now. Please try again later or contact an administrator."
+            #         self.conversation_history.append({'role': 'assistant', 'content': error_response})
+            #         return error_response
+            # else:
+            #     # Already using free provider, return error
+            #     error_response = "❌ The free provider is currently unavailable. Please try again later."
+            #     self.conversation_history.append({'role': 'assistant', 'content': error_response})
+            #     return error_response
     
     async def generate_image(self, prompt: str, model: Optional[str] = None) -> str:
         """Generate image using current provider"""

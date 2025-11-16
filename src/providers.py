@@ -1,11 +1,13 @@
 import os
 import logging
 import re
+import json
 from typing import Dict, List, Optional, Any
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 import asyncio
+from pathlib import Path
 
 import g4f
 from g4f.client import Client
@@ -43,7 +45,7 @@ class BaseProvider(ABC):
         self.models: List[ModelInfo] = []
         
     @abstractmethod
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, new_message: str, channel_id: str, **kwargs) -> str:
         """Generate chat completion"""
         pass
     
@@ -104,7 +106,7 @@ class FreeProvider(BaseProvider):
         # Track current provider for better error handling
         self.current_provider_index = 0
         
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, new_message: str, channel_id: str, **kwargs) -> str:
         """Generate chat completion with robust fallback system"""
         
         # Determine the best model to use
@@ -220,21 +222,89 @@ class OpenAIProvider(BaseProvider):
     def __init__(self, api_key: str):
         super().__init__(api_key)
         self.client = AsyncOpenAI(api_key=api_key)
-        
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
+        self.conversation_store: Dict[str, str] = {}  # Maps channel_id -> openai_conversation_id
+        self.mapping_file = Path("conversation_mappings.json")
+        self._load_conversation_mappings()
+    
+    def _load_conversation_mappings(self):
+        """Load conversation mappings from disk"""
         try:
-            if not model:
-                model = "gpt-4o-mini"
-                
-            response = await self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                **kwargs
-            )
-            return response.choices[0].message.content
+            if self.mapping_file.exists():
+                with open(self.mapping_file, 'r') as f:
+                    self.conversation_store = json.load(f)
+                logger.info(f"Loaded {len(self.conversation_store)} conversation mappings from disk")
+            else:
+                logger.info("No existing conversation mappings found, starting fresh")
         except Exception as e:
-            logger.error(f"OpenAI provider error: {e}")
+            logger.error(f"Failed to load conversation mappings: {e}")
+            self.conversation_store = {}
+    
+    def _save_conversation_mappings(self):
+        """Save conversation mappings to disk"""
+        try:
+            with open(self.mapping_file, 'w') as f:
+                json.dump(self.conversation_store, f, indent=2)
+            logger.debug(f"Saved {len(self.conversation_store)} conversation mappings to disk")
+        except Exception as e:
+            logger.error(f"Failed to save conversation mappings: {e}")
+    
+    async def get_or_create_conversation(self, channel_id: str) -> str:
+        """Get existing conversation ID or create a new one for this channel"""
+        if channel_id in self.conversation_store:
+            return self.conversation_store[channel_id]
+        
+        try:
+            # Create a new conversation in OpenAI's system
+            conversation = await self.client.conversations.create()
+            conversation_id = conversation.id
+            
+            # Store the mapping
+            self.conversation_store[channel_id] = conversation_id
+            logger.info(f"Created new OpenAI conversation {conversation_id} for channel {channel_id}")
+            
+            # Persist to disk
+            self._save_conversation_mappings()
+            
+            return conversation_id
+        except Exception as e:
+            logger.error(f"Failed to create conversation: {e}")
             raise
+        
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, new_message: str, channel_id: str, **kwargs) -> str:
+        use_response_api = True
+        if use_response_api:
+            try:
+                if not model:
+                    model = "gpt-5.1"
+
+                # Get or create conversation for this channel
+                conversation_id = await self.get_or_create_conversation(channel_id)
+
+                response = await self.client.responses.create(
+                    model=model,
+                    input=new_message,
+                    conversation=conversation_id,
+                    **kwargs
+                )
+
+                return response.output[0].content[0].text
+            except Exception as e:
+                logger.error(f"OpenAI provider error: {e}")
+                raise
+        else:
+            if not model:
+                model = "gpt-5.1"
+
+            try:
+                response = await self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    **kwargs
+                )
+                return response.choices[0].message.content
+            except Exception as e:
+                logger.error(f"OpenAI provider error: {e}")
+                raise
     
     async def generate_image(self, prompt: str, model: Optional[str] = None, **kwargs) -> str:
         try:
@@ -271,7 +341,7 @@ class ClaudeProvider(BaseProvider):
         super().__init__(api_key)
         self.client = AsyncAnthropic(api_key=api_key)
         
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, new_message: str, channel_id: str, **kwargs) -> str:
         try:
             if not model:
                 model = "claude-3-5-haiku-latest"
@@ -322,7 +392,7 @@ class GeminiProvider(BaseProvider):
         super().__init__(api_key)
         genai.configure(api_key=api_key)
         
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, new_message: str, channel_id: str, **kwargs) -> str:
         try:
             if not model:
                 model = "gemini-2.0-flash-exp"
@@ -391,7 +461,7 @@ class GrokProvider(BaseProvider):
         self.api_key = api_key
         self.base_url = "https://api.x.ai/v1"
         
-    async def chat_completion(self, messages: List[Dict[str, str]], model: str, **kwargs) -> str:
+    async def chat_completion(self, messages: List[Dict[str, str]], model: str, new_message: str, channel_id: str, **kwargs) -> str:
         try:
             if not model:
                 model = "grok-2-latest"
@@ -465,8 +535,8 @@ class ProviderManager:
     def _initialize_providers(self):
         """Initialize available providers based on API keys"""
         # Always add free provider
-        self.providers[ProviderType.FREE] = FreeProvider()
-        logger.info("Initialized free provider")
+        # self.providers[ProviderType.FREE] = FreeProvider()
+        logger.info("Skipped initializing free providers")
         
         # API key configurations: (env_var, provider_type, provider_class, validation_pattern)
         api_configs = [

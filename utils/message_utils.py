@@ -11,27 +11,27 @@ async def send_split_message(self, response: str, message: Message, has_followed
             if is_code_block:
                 code_block_chunks = [parts[i][j:j+char_limit] for j in range(0, len(parts[i]), char_limit)]
                 for chunk in code_block_chunks:
-                    if self.is_replying_all == "True" or has_followed_up:
-                        await message.channel.send(f"```{chunk}```")
-                    else:
+                    if hasattr(message, 'followup') and not has_followed_up:
                         await message.followup.send(f"```{chunk}```")
                         has_followed_up = True
+                    else:
+                        await message.channel.send(f"```{chunk}```")
                 is_code_block = False
             else:
                 non_code_chunks = [parts[i][j:j+char_limit] for j in range(0, len(parts[i]), char_limit)]
                 for chunk in non_code_chunks:
-                    if self.is_replying_all == "True" or has_followed_up:
-                        await message.channel.send(chunk)
-                    else:
+                    if hasattr(message, 'followup') and not has_followed_up:
                         await message.followup.send(chunk)
                         has_followed_up = True
+                    else:
+                        await message.channel.send(chunk)
                 is_code_block = True
     else:
-        if self.is_replying_all == "True" or has_followed_up:
-            await message.channel.send(response)
-        else:
+        if hasattr(message, 'followup') and not has_followed_up:
             await message.followup.send(response)
             has_followed_up = True
+        else:
+            await message.channel.send(response)
 
     return has_followed_up
 
