@@ -91,7 +91,16 @@ class DiscordClient(discord.Client):
             author = message.author.id
         
         try:
-            response = await self.handle_response(user_message, message.channel.id)
+            # Extract image URLs from attachments
+            image_urls = []
+            if hasattr(message, 'attachments') and message.attachments:
+                for attachment in message.attachments:
+                    # Check if attachment is an image
+                    if attachment.content_type and attachment.content_type.startswith('image/'):
+                        image_urls.append(attachment.url)
+                        logger.info(f"Found image attachment: {attachment.url}")
+            
+            response = await self.handle_response(user_message, message.channel.id, image_urls=image_urls)
             response_content = f'{response}'
             await send_split_message(self, response_content, message)
         except Exception as e:
@@ -119,10 +128,19 @@ class DiscordClient(discord.Client):
         except Exception as e:
             logger.exception(f"Error while sending system prompt: {e}")
     
-    async def handle_response(self, user_message: str, channel_id: str) -> str:
+    async def handle_response(self, user_message: str, channel_id: str, image_urls: Optional[List[str]] = None) -> str:
         """Generate response using current provider"""
-        # Add user message to history
-        self.conversation_history.append({'role': 'user', 'content': user_message})
+        # Add user message to history (with images if present)
+        if image_urls:
+            # Multi-modal format for messages with images
+            content = [{'type': 'input_text', 'text': user_message}]
+            for image_url in image_urls:
+                content.append({'type': 'input_image', 'image_url': image_url})
+            self.conversation_history.append({'role': 'user', 'content': content})
+            logger.info(f"Added message with {len(image_urls)} image(s) to history")
+        else:
+            # Simple text format for text-only messages
+            self.conversation_history.append({'role': 'user', 'content': user_message})
         
         # Better conversation management
         MAX_CONVERSATION_LENGTH = int(os.getenv("MAX_CONVERSATION_LENGTH", "20"))
@@ -151,6 +169,7 @@ class DiscordClient(discord.Client):
                 new_message=user_message,
                 messages=self.conversation_history,
                 model=self.current_model if self.current_model != "auto" else None,
+                image_urls=image_urls,
             )
             
             # Add to history
