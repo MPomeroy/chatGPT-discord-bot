@@ -92,7 +92,7 @@ class DiscordClient(discord.Client):
         
         try:
             response = await self.handle_response(user_message, message.channel.id)
-            response_content = f'> **{user_message}** - <@{str(author)}> \n\n{response}'
+            response_content = f'{response}'
             await send_split_message(self, response_content, message)
         except Exception as e:
             logger.exception(f"Error while sending: {e}")

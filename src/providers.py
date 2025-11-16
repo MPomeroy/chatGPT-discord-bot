@@ -250,8 +250,8 @@ class OpenAIProvider(BaseProvider):
     
     async def get_or_create_conversation(self, channel_id: str) -> str:
         """Get existing conversation ID or create a new one for this channel"""
-        if channel_id in self.conversation_store:
-            return self.conversation_store[channel_id]
+        if str(channel_id) in self.conversation_store.keys():
+            return self.conversation_store[str(channel_id)]
         
         try:
             # Create a new conversation in OpenAI's system
