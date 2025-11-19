@@ -253,7 +253,7 @@ class OpenAIProvider(BaseProvider):
             conversation_id = conversation.id
             
             # Store the mapping
-            self.conversation_store[channel_id] = conversation_id
+            self.conversation_store[str(channel_id)] = conversation_id
             logger.info(f"Created new OpenAI conversation {conversation_id} for channel {channel_id}")
             
             # Persist to disk

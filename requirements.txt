@@ -2,6 +2,6 @@ discord-ext-voice_recv==0.5.2a179
 discord.py==2.6.4
 openai==2.8.0
 python-dotenv==1.0.1
-setuptools=80.9.0
+setuptools==80.9.0
 Wave==0.0.2
 webrtcvad==2.0.10
