@@ -1,3 +1,4 @@
+aiohttp==3.10.11
 discord-ext-voice_recv==0.5.2a179
 discord.py==2.6.4
 openai==2.8.0

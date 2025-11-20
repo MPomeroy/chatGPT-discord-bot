@@ -2,7 +2,7 @@ import os
 import logging
 import re
 import json
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
@@ -10,6 +10,8 @@ import asyncio
 from pathlib import Path
 
 from openai import AsyncOpenAI
+
+from src.openai_upload_helper import OpenAIUploadHelper
 
 logger = logging.getLogger(__name__)
 
@@ -209,13 +211,13 @@ class BaseProvider(ABC):
 #     def supports_image_generation(self) -> bool:
 #         return False  # Disabled for reliability - only working text providers included
 
-
 class OpenAIProvider(BaseProvider):
     """Official OpenAI API provider"""
     
     def __init__(self, api_key: str):
         super().__init__(api_key)
         self.client = AsyncOpenAI(api_key=api_key)
+        self.upload_helper = OpenAIUploadHelper(self.client)
         self.conversation_store: Dict[str, str] = {}  # Maps channel_id -> openai_conversation_id
         self.mapping_file = Path("conversation_mappings.json")
         self._load_conversation_mappings()
@@ -288,31 +290,33 @@ class OpenAIProvider(BaseProvider):
                     
                     # Format input based on whether attachments are present
                     if image_urls or file_urls:
-                        # Multi-modal format with attachments
+                        # Multi-modal format with attachments using Files API
                         input_content = [{"type": "input_text", "text": new_message}]
                         
-                        # Add images
+                        # Process all URLs (both images and files) through Files API
+                        all_urls = []
                         if image_urls:
-                            for image_url in image_urls:
-                                input_content.append({"type": "input_image", "image_url": image_url})
-                        
-                        # Add files
+                            all_urls.extend(image_urls)
                         if file_urls:
-                            for file_url in file_urls:
-                                input_content.append({"type": "input_file", "file_url": file_url})
+                            all_urls.extend(file_urls)
+                        
+                        # Download and upload each file using helper
+                        file_content_items, successful_uploads, failed_uploads = await self.upload_helper.process_urls(all_urls)
+                        
+                        # Add file content items to input
+                        input_content.extend(file_content_items)
                         
                         input_data = [{"role": "user", "content": input_content}]
                         
                         # Build logging summary
-                        attachment_summary = []
-                        if image_urls:
-                            attachment_summary.append(f"{len(image_urls)} image(s)")
-                        if file_urls:
-                            attachment_summary.append(f"{len(file_urls)} file(s)")
-                        logger.info(f"Sending message with {', '.join(attachment_summary)} to OpenAI")
+                        logger.info(f"Sent {successful_uploads} file(s) to OpenAI via Files API")
+                        if failed_uploads > 0:
+                            logger.warning(f"{failed_uploads} file(s) failed to process and were skipped")
                     else:
                         # Simple text format
                         input_data = new_message
+
+                    print(input_data)
 
                     response = await self.client.responses.create(
                         model=model,
@@ -322,7 +326,7 @@ class OpenAIProvider(BaseProvider):
                         **kwargs
                     )
 
-                    # Success! Return immediately
+                    # Success! Get result
                     result = response.output[0].content[0].text
                     logger.debug(f"API call successful on attempt {attempt + 1}, returning response")
                     return result
@@ -346,7 +350,6 @@ class OpenAIProvider(BaseProvider):
                         logger.error(f"OpenAI provider error: {e}")
                         raise
             
-            # If we get here, all retries were exhausted (shouldn't happen with current logic)
             if last_error:
                 raise last_error
             raise Exception("Unexpected error: retry loop completed without success or error")
