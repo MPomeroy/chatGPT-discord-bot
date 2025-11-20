@@ -1,0 +1,1 @@
+nohup techGPT_env/bin/python ./main.py &
