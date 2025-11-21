@@ -7,7 +7,7 @@ from src.log import logger
 CONFIG_FILE = "reasoning_levels.json"
 
 # Valid reasoning levels for GPT-5.1
-VALID_LEVELS = ["none", "minimal", "low", "medium", "high"]
+VALID_LEVELS = ["none", "low", "medium", "high"]
 
 
 def _load_config() -> dict:
