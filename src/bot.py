@@ -15,7 +15,20 @@ def run_discord_bot():
     @discordClient.event
     async def on_ready():
         await discordClient.send_start_prompt()
-        await discordClient.tree.sync()
+        
+        # Sync commands - guild sync is instant, global sync takes up to 1 hour
+        guild_id = os.getenv("DISCORD_GUILD_ID")
+        if guild_id:
+            # Guild-specific sync (instant) - good for development
+            guild = discord.Object(id=int(guild_id))
+            discordClient.tree.copy_global_to(guild=guild)
+            await discordClient.tree.sync(guild=guild)
+            logger.info(f"Commands synced to guild {guild_id}")
+        else:
+            # Global sync (can take up to 1 hour)
+            await discordClient.tree.sync()
+            logger.info("Commands synced globally (may take up to 1 hour to appear)")
+        
         loop = asyncio.get_event_loop()
         loop.create_task(discordClient.process_messages())
         logger.info(f'{discordClient.user} is now running!')
@@ -307,6 +320,12 @@ def run_discord_bot():
         commands = [
             ("💬 **Chat Commands**", [
             ]),
+            ("📬 **Queue Management**", [
+                ("/enqueue", "Enter queue mode to build longer messages"),
+                ("/send", "Send all queued messages as one payload"),
+                ("/viewqueue", "View your current message queue"),
+                ("/clearqueue", "Clear queue and exit queue mode")
+            ]),
             ("🎨 **Image Generation**", [
                 ("/draw [prompt]", "Generate an image from text")
             ]),
@@ -352,6 +371,146 @@ def run_discord_bot():
         
         await interaction.response.send_message(embed=embed, ephemeral=False)
 
+    @discordClient.tree.command(name="enqueue", description="Enter queue mode to build longer messages")
+    async def enqueue(interaction: discord.Interaction):
+        """Activate queue mode for building longer messages"""
+        user_id = str(interaction.user.id)
+        channel_id = str(interaction.channel_id)
+        
+        # Check if already in queue mode
+        if discordClient.is_queue_mode(user_id, channel_id):
+            await interaction.response.send_message(
+                "⚠️ Queue mode is already active! Your messages are being queued.\n"
+                "Use `/viewqueue` to see your queue, `/send` to send, or `/clearqueue` to cancel.",
+                ephemeral=False
+            )
+            return
+        
+        # Enable queue mode
+        discordClient.enable_queue_mode(user_id, channel_id)
+        
+        await interaction.response.send_message(
+            "📝 **Queue mode activated!**\n\n"
+            "Your next messages in this channel will be queued instead of sent immediately.\n"
+            "• Use `/send` to send all queued messages as one payload\n"
+            "• Use `/viewqueue` to see your current queue\n"
+            "• Use `/clearqueue` to cancel and clear the queue",
+            ephemeral=False
+        )
+
+    @discordClient.tree.command(name="send", description="Send all queued messages as one payload")
+    async def send(interaction: discord.Interaction):
+        """Send all queued messages concatenated together"""
+        user_id = str(interaction.user.id)
+        channel_id = str(interaction.channel_id)
+        
+        # Check if in queue mode
+        if not discordClient.is_queue_mode(user_id, channel_id):
+            await interaction.response.send_message(
+                "❌ Queue mode is not active. Use `/enqueue` to start queueing messages.",
+                ephemeral=True
+            )
+            return
+        
+        # Get queued messages
+        queue = discordClient.get_queue(user_id, channel_id)
+        
+        if not queue:
+            await interaction.response.send_message(
+                "❌ No messages in queue. Send some messages first, or use `/clearqueue` to exit queue mode.",
+                ephemeral=True
+            )
+            return
+        
+        # Concatenate messages
+        concatenated_message = "\n\n".join(queue)
+        
+        # Clear queue and disable queue mode
+        discordClient.clear_queue(user_id, channel_id)
+        discordClient.disable_queue_mode(user_id, channel_id)
+        
+        # Send through normal message flow
+        await discordClient.enqueue_message(interaction, concatenated_message)
+
+    @discordClient.tree.command(name="viewqueue", description="View your current message queue")
+    async def viewqueue(interaction: discord.Interaction):
+        """Display the current message queue"""
+        user_id = str(interaction.user.id)
+        channel_id = str(interaction.channel_id)
+        
+        # Get queue status
+        is_active = discordClient.is_queue_mode(user_id, channel_id)
+        queue = discordClient.get_queue(user_id, channel_id)
+        
+        if not queue:
+            status_msg = "🔴 Queue mode: inactive" if not is_active else "🟢 Queue mode: active"
+            await interaction.response.send_message(
+                f"{status_msg}\n\n"
+                "📭 Your queue is empty.\n"
+                "Use `/enqueue` to start queueing messages.",
+                ephemeral=False
+            )
+            return
+        
+        # Calculate total character count
+        total_chars = sum(len(msg) for msg in queue)
+        
+        # Build queue display
+        embed = discord.Embed(
+            title="📬 Message Queue",
+            description=f"**Status:** {'🟢 Active' if is_active else '🔴 Inactive'}\n"
+                       f"**Messages:** {len(queue)}\n"
+                       f"**Total Characters:** {total_chars:,}",
+            color=discord.Color.blue()
+        )
+        
+        # Show each message (truncate if too long)
+        for i, msg in enumerate(queue, 1):
+            # Truncate message if longer than 200 chars for display
+            display_msg = msg if len(msg) <= 200 else f"{msg[:200]}..."
+            embed.add_field(
+                name=f"Message {i}",
+                value=f"```{display_msg}```",
+                inline=False
+            )
+            
+            # Discord embed limit is 25 fields
+            if i >= 25:
+                embed.add_field(
+                    name="...",
+                    value=f"_and {len(queue) - 25} more message(s)_",
+                    inline=False
+                )
+                break
+        
+        await interaction.response.send_message(embed=embed, ephemeral=False)
+
+    @discordClient.tree.command(name="clearqueue", description="Clear your message queue and exit queue mode")
+    async def clearqueue(interaction: discord.Interaction):
+        """Clear the message queue and disable queue mode"""
+        user_id = str(interaction.user.id)
+        channel_id = str(interaction.channel_id)
+        
+        # Get current queue size before clearing
+        queue_size = discordClient.get_queue_size(user_id, channel_id)
+        is_active = discordClient.is_queue_mode(user_id, channel_id)
+        
+        if queue_size == 0 and not is_active:
+            await interaction.response.send_message(
+                "ℹ️ No active queue to clear.",
+                ephemeral=True
+            )
+            return
+        
+        # Clear queue and disable queue mode
+        discordClient.clear_queue(user_id, channel_id)
+        discordClient.disable_queue_mode(user_id, channel_id)
+        
+        await interaction.response.send_message(
+            f"🗑️ Queue cleared! Removed {queue_size} message{'s' if queue_size != 1 else ''} and exited queue mode.",
+            ephemeral=False
+        )
+
     # Handle regular messages when replyall is on
     @discordClient.event
     async def on_message(message):
@@ -368,6 +527,15 @@ def run_discord_bot():
             discordClient.current_channel = message.channel
             
             logger.info(f"\x1b[31m{username}\x1b[0m : {user_message} in ({message.channel})")
+            
+            # Check if user is in queue mode
+            user_id = str(message.author.id)
+            channel_id = str(message.channel.id)
+            if discordClient.is_queue_mode(user_id, channel_id):
+                # Add to queue instead of processing immediately
+                discordClient.add_to_queue(user_id, channel_id, user_message)
+                return
+            
             await discordClient.enqueue_message(message, user_message)
 
     # Run the bot

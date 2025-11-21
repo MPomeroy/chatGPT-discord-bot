@@ -72,6 +72,10 @@ class DiscordClient(discord.Client):
         
         # Message queue for rate limiting
         self.message_queue = asyncio.Queue()
+        
+        # User message queues for building longer payloads
+        self.user_message_queues: Dict[str, List[str]] = {}
+        self.queue_mode_active: Dict[str, bool] = {}
     
     async def process_messages(self):
         """Process queued messages"""
@@ -91,9 +95,10 @@ class DiscordClient(discord.Client):
                             self.message_queue.task_done()
             await asyncio.sleep(1)
     
-    async def enqueue_message(self, message, user_message):
+    async def enqueue_message(self, message, user_message, skip_defer=False):
         """Add message to processing queue"""
-        await message.response.defer(ephemeral=self.isPrivate) if hasattr(message, 'response') else None
+        if not skip_defer:
+            await message.response.defer(ephemeral=self.isPrivate) if hasattr(message, 'response') else None
         await self.message_queue.put((message, user_message))
     
     async def send_message(self, message, user_message):
@@ -270,6 +275,54 @@ class DiscordClient(discord.Client):
             provider = self.provider_manager.get_provider()
             models = provider.get_available_models()
             self.current_model = models[0].name if models else "auto"
+    
+    # Queue management methods
+    def get_queue_key(self, user_id: str, channel_id: str) -> str:
+        """Generate queue key for user+channel combination"""
+        return f"{user_id}:{channel_id}"
+    
+    def is_queue_mode(self, user_id: str, channel_id: str) -> bool:
+        """Check if queue mode is active for user in channel"""
+        key = self.get_queue_key(user_id, channel_id)
+        return self.queue_mode_active.get(key, False)
+    
+    def enable_queue_mode(self, user_id: str, channel_id: str):
+        """Activate queue mode for user in channel"""
+        key = self.get_queue_key(user_id, channel_id)
+        self.queue_mode_active[key] = True
+        logger.info(f"Queue mode enabled for user {user_id} in channel {channel_id}")
+    
+    def disable_queue_mode(self, user_id: str, channel_id: str):
+        """Deactivate queue mode for user in channel"""
+        key = self.get_queue_key(user_id, channel_id)
+        self.queue_mode_active[key] = False
+        logger.info(f"Queue mode disabled for user {user_id} in channel {channel_id}")
+    
+    def add_to_queue(self, user_id: str, channel_id: str, message: str):
+        """Append message to user's queue in channel"""
+        key = self.get_queue_key(user_id, channel_id)
+        if key not in self.user_message_queues:
+            self.user_message_queues[key] = []
+        self.user_message_queues[key].append(message)
+        logger.info(f"Added message to queue for user {user_id} in channel {channel_id} (total: {len(self.user_message_queues[key])})")
+    
+    def get_queue(self, user_id: str, channel_id: str) -> List[str]:
+        """Retrieve queue for user in channel"""
+        key = self.get_queue_key(user_id, channel_id)
+        return self.user_message_queues.get(key, [])
+    
+    def clear_queue(self, user_id: str, channel_id: str) -> int:
+        """Clear queue for user in channel, return number of messages cleared"""
+        key = self.get_queue_key(user_id, channel_id)
+        count = len(self.user_message_queues.get(key, []))
+        self.user_message_queues[key] = []
+        logger.info(f"Cleared {count} messages from queue for user {user_id} in channel {channel_id}")
+        return count
+    
+    def get_queue_size(self, user_id: str, channel_id: str) -> int:
+        """Get count of queued messages for user in channel"""
+        key = self.get_queue_key(user_id, channel_id)
+        return len(self.user_message_queues.get(key, []))
     
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
         """Handle voice state updates"""
