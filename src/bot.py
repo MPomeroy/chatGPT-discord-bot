@@ -1,12 +1,14 @@
 import os
 import asyncio
 import discord
+from discord import app_commands
 from typing import Optional
 
 from src.aclient import discordClient
 from src.providers import ProviderType
 from src import log, personas
 from src.log import logger
+from src import reasoning_config
 
 
 def run_discord_bot():
@@ -18,167 +20,9 @@ def run_discord_bot():
         loop.create_task(discordClient.process_messages())
         logger.info(f'{discordClient.user} is now running!')
 
-    @discordClient.tree.command(name="chat", description="Have a chat with AI")
-    async def chat(interaction: discord.Interaction, *, message: str):
-        # Input validation
-        if len(message) > 2000:
-            await interaction.response.send_message(
-                "❌ Message too long (max 2000 characters)", 
-                ephemeral=True
-            )
-            return
-        
-        # Sanitize input
-        message = message.replace('\x00', '')  # Remove null bytes
-        message = message.strip()
-        
-        if not message:
-            await interaction.response.send_message(
-                "❌ Please provide a message", 
-                ephemeral=True
-            )
-            return
-        
-        if discordClient.is_replying_all:
-            await interaction.response.defer(ephemeral=False)
-            await interaction.followup.send(
-                "> **WARN: You already on replyAll mode. If you want to use the Slash Command, switch to normal mode by using `/replyall` again**")
-            logger.warning("\x1b[31mYou already on replyAll mode, can't use slash command!\x1b[0m")
-            return
-        if interaction.user == discordClient.user:
-            return
-        username = str(interaction.user)
-        discordClient.current_channel = interaction.channel
-        logger.info(
-            f"\x1b[31m{username}\x1b[0m : /chat [{message}] in ({discordClient.current_channel})")
-
-        await discordClient.enqueue_message(interaction, message)
-
-    @discordClient.tree.command(name="provider", description="Switch AI provider and model")
-    async def provider(interaction: discord.Interaction):
-        """Interactive provider and model selection"""
-        
-        # Create provider selection dropdown
-        class ProviderSelect(discord.ui.Select):
-            def __init__(self):
-                options = []
-                available_providers = discordClient.provider_manager.get_available_providers()
-                
-                for provider_type in available_providers:
-                    emoji_map = {
-                        ProviderType.FREE: "🆓",
-                        ProviderType.OPENAI: "🟢",
-                        ProviderType.CLAUDE: "🟣",
-                        ProviderType.GEMINI: "🔵",
-                        ProviderType.GROK: "⚫"
-                    }
-                    
-                    options.append(discord.SelectOption(
-                        label=provider_type.value.capitalize(),
-                        value=provider_type.value,
-                        emoji=emoji_map.get(provider_type, "🤖"),
-                        default=(provider_type == discordClient.provider_manager.current_provider)
-                    ))
-                
-                super().__init__(
-                    placeholder="Select a provider...",
-                    options=options,
-                    min_values=1,
-                    max_values=1
-                )
-            
-            async def callback(self, interaction: discord.Interaction):
-                selected_provider = ProviderType(self.values[0])
-                
-                # Get models for selected provider
-                provider = discordClient.provider_manager.get_provider(selected_provider)
-                models = provider.get_available_models()
-                
-                if not models:
-                    discordClient.switch_provider(selected_provider)
-                    await interaction.response.send_message(
-                        f"✅ Switched to **{selected_provider.value}** provider",
-                        ephemeral=True
-                    )
-                    return
-                
-                # Create model selection dropdown
-                class ModelSelect(discord.ui.Select):
-                    def __init__(self):
-                        options = [
-                            discord.SelectOption(
-                                label="Auto (Best Available)",
-                                value="auto",
-                                description="Let the provider choose the best model",
-                                emoji="🎯"
-                            )
-                        ]
-                        
-                        for model in models[:24]:  # Discord limit is 25 options
-                            desc = model.description[:100] if model.description else ""
-                            emoji = "🖼️" if model.supports_image_generation else "💬"
-                            
-                            options.append(discord.SelectOption(
-                                label=model.name,
-                                value=model.name,
-                                description=desc,
-                                emoji=emoji
-                            ))
-                        
-                        super().__init__(
-                            placeholder="Select a model...",
-                            options=options,
-                            min_values=1,
-                            max_values=1
-                        )
-                    
-                    async def callback(self, interaction: discord.Interaction):
-                        selected_model = self.values[0]
-                        discordClient.switch_provider(selected_provider, selected_model)
-                        
-                        await interaction.response.send_message(
-                            f"✅ Switched to **{selected_provider.value}** provider with **{selected_model}** model",
-                            ephemeral=True
-                        )
-                
-                model_view = discord.ui.View()
-                model_view.add_item(ModelSelect())
-                
-                await interaction.response.send_message(
-                    f"Select a model for **{selected_provider.value}** provider:",
-                    view=model_view,
-                    ephemeral=True
-                )
-        
-        # Create and send the provider selection view
-        provider_view = discord.ui.View()
-        provider_view.add_item(ProviderSelect())
-        
-        # Get current info
-        info = discordClient.get_current_provider_info()
-        
-        embed = discord.Embed(
-            title="🤖 AI Provider Settings",
-            description=f"**Current Provider:** {info['provider']}\n**Current Model:** {info['current_model']}",
-            color=discord.Color.blue()
-        )
-        
-        await interaction.response.send_message(
-            embed=embed,
-            view=provider_view,
-            ephemeral=True
-        )
-
     @discordClient.tree.command(name="draw", description="Generate an image")
     async def draw(interaction: discord.Interaction, *, prompt: str):
         # Input validation
-        if len(prompt) > 500:
-            await interaction.response.send_message(
-                "❌ Prompt too long (max 500 characters)", 
-                ephemeral=True
-            )
-            return
-        
         prompt = prompt.strip()
         if not prompt:
             await interaction.response.send_message(
@@ -276,20 +120,6 @@ def run_discord_bot():
             await interaction.followup.send(
                 "> **INFO: Next, the response will be sent as normal message and visible to everyone.**")
 
-    @discordClient.tree.command(name="replyall", description="Toggle replyAll access")
-    async def replyall(interaction: discord.Interaction):
-        await interaction.response.defer(ephemeral=False)
-        if discordClient.is_replying_all:
-            discordClient.is_replying_all = False
-            await interaction.followup.send("> **INFO: The bot will only respond to /chat commands.**")
-            logger.warning("\x1b[31mSwitch to normal mode\x1b[0m")
-        else:
-            discordClient.is_replying_all = True
-            await interaction.followup.send("> **INFO: The bot will respond to all messages in this channel.**")
-            logger.info("Switch to replyAll mode")
-
-    @discordClient.tree.command(name="reset", description="Clear conversation history")
-    async def reset(interaction: discord.Interaction):
         discordClient.reset_conversation_history()
         await interaction.response.send_message(
             "🔄 Conversation history has been cleared. Starting fresh!",
@@ -391,6 +221,81 @@ def run_discord_bot():
             ephemeral=False
         )
 
+    @discordClient.tree.command(name="setreasoning", description="Configure AI reasoning effort level for this channel")
+    @app_commands.describe(level="Reasoning effort level (default = let OpenAI decide)")
+    @app_commands.choices(level=[
+        app_commands.Choice(name="Default (OpenAI decides)", value="default"),
+        app_commands.Choice(name="None", value="none"),
+        app_commands.Choice(name="Minimal", value="minimal"),
+        app_commands.Choice(name="Low", value="low"),
+        app_commands.Choice(name="Medium", value="medium"),
+        app_commands.Choice(name="High", value="high"),
+    ])
+    async def setreasoning(
+        interaction: discord.Interaction, 
+        level: app_commands.Choice[str]
+    ):
+        """Set the reasoning level for GPT-5.1 in this channel"""
+        level_value = level.value if isinstance(level, app_commands.Choice) else level
+        channel_id = str(interaction.channel_id)
+        
+        # Handle "default" to unset the reasoning level
+        if level_value.lower() == "default":
+            success = reasoning_config.remove_reasoning_level(channel_id)
+            if success:
+                await interaction.response.send_message(
+                    "✅ Reasoning level reset to **default** (OpenAI will decide). "
+                    "The AI will use its default reasoning effort for this channel.",
+                    ephemeral=False
+                )
+            else:
+                await interaction.response.send_message(
+                    "❌ Failed to reset reasoning level. Please try again.",
+                    ephemeral=True
+                )
+            return
+        
+        # Validate and set the reasoning level
+        if level_value.lower() not in reasoning_config.VALID_LEVELS:
+            await interaction.response.send_message(
+                f"❌ Invalid reasoning level. Valid options: {', '.join(reasoning_config.VALID_LEVELS)}, or 'default' to unset.",
+                ephemeral=True
+            )
+            return
+        
+        success = reasoning_config.set_reasoning_level(channel_id, level_value.lower())
+        
+        if success:
+            await interaction.response.send_message(
+                f"✅ Reasoning level set to **{level_value.lower()}** for this channel. "
+                f"The AI will use this reasoning effort when responding here.",
+                ephemeral=False
+            )
+        else:
+            await interaction.response.send_message(
+                "❌ Failed to set reasoning level. Please try again.",
+                ephemeral=True
+            )
+
+    @discordClient.tree.command(name="getreasoning", description="Check current reasoning level for this channel")
+    async def getreasoning(interaction: discord.Interaction):
+        """Get the current reasoning level setting for this channel"""
+        channel_id = str(interaction.channel_id)
+        current_level = reasoning_config.get_reasoning_level(channel_id)
+        
+        if current_level:
+            await interaction.response.send_message(
+                f"🧠 Current reasoning level: **{current_level}**\n"
+                f"Valid levels: {', '.join(reasoning_config.VALID_LEVELS)}, or 'default' to unset",
+                ephemeral=False
+            )
+        else:
+            await interaction.response.send_message(
+                f"🧠 Current reasoning level: **default** (OpenAI decides)\n"
+                f"Valid levels: {', '.join(reasoning_config.VALID_LEVELS)}, or 'default' to unset",
+                ephemeral=False
+            )
+
     @discordClient.tree.command(name="help", description="Show all available commands")
     async def help(interaction: discord.Interaction):
         embed = discord.Embed(
@@ -401,12 +306,6 @@ def run_discord_bot():
         
         commands = [
             ("💬 **Chat Commands**", [
-                ("/chat [message]", "Chat with the AI"),
-                ("/reset", "Clear conversation history"),
-                ("/replyall", "Toggle bot responding to all messages")
-            ]),
-            ("🤖 **Provider & Model**", [
-                ("/provider", "Switch AI provider and model interactively")
             ]),
             ("🎨 **Image Generation**", [
                 ("/draw [prompt]", "Generate an image from text")
@@ -423,8 +322,9 @@ def run_discord_bot():
                 ("Admin Only", "jailbreak-v1, jailbreak-v2, jailbreak-v3 (restricted)")
             ]),
             ("⚙️ **Settings**", [
-                ("/private", "Toggle private/public responses"),
-                ("/help", "Show this help message")
+                ("/help", "Show this help message"),
+                ("/setreasoning [level]", "Set AI reasoning effort (none/minimal/low/medium/high/default)"),
+                ("/getreasoning", "Check current reasoning level for this channel")
             ])
         ]
         

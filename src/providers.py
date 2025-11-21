@@ -12,6 +12,7 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 from src.openai_upload_helper import OpenAIUploadHelper
+from src import reasoning_config
 
 logger = logging.getLogger(__name__)
 
@@ -318,18 +319,50 @@ class OpenAIProvider(BaseProvider):
 
                     print(input_data)
 
-                    response = await self.client.responses.create(
-                        model=model,
-                        input=input_data,
-                        conversation=conversation_id,
-                        # reasoning={"effort": "medium"},
+                    # Get reasoning level for this channel (if set)
+                    reasoning_level = reasoning_config.get_reasoning_level(channel_id)
+                    
+                    # Build API call parameters
+                    api_params = {
+                        "model": model,
+                        "input": input_data,
+                        "conversation": conversation_id,
                         **kwargs
-                    )
+                    }
+                    
+                    # Only include reasoning parameter if explicitly set
+                    if reasoning_level:
+                        api_params["reasoning"] = {"effort": reasoning_level}
+                        logger.info(f"Using reasoning level: {reasoning_level} for channel {channel_id}")
+                    
+                    response = await self.client.responses.create(**api_params)
 
                     # Success! Get result
-                    result = response.output[0].content[0].text
-                    logger.debug(f"API call successful on attempt {attempt + 1}, returning response")
-                    return result
+                    # If there's only one output item, use it; otherwise look for type="message"
+                    if len(response.output) == 1:
+                        output_item = response.output[0]
+                        
+                        result = output_item.content[0].text
+                        logger.debug(f"API call successful on attempt {attempt + 1}, returning response")
+                        return result
+
+                    else:
+                        # Concatenate all output items with type="message"
+                        message_texts = []
+                        for item in response.output:
+                            if hasattr(item, 'type') and item.type == 'message':
+                                for content in getattr(item, 'content', []):
+                                    if hasattr(content, 'text'):
+                                        message_texts.append(content.text)
+                        if message_texts:
+                            result = "".join(message_texts)
+                        else:
+                            # Fallback: take text from the first content item
+                            result = response.output[0].content[0].text
+                        logger.debug(f"API call successful on attempt {attempt + 1}, returning response")
+                        return result
+                        
+                    
                     
                 except Exception as e:
                     error_str = str(e)

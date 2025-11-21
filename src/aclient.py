@@ -213,33 +213,12 @@ class DiscordClient(discord.Client):
             return response
             
         except Exception as e:
+            import traceback
             logger.error(f"Provider error: {e}")
+            logger.error("Stacktrace:\n" + traceback.format_exc())
             # Return a user-friendly error message instead of None
             error_response = "❌ I'm having trouble processing your request right now. Please try again in a moment."
             return error_response
-            # Try fallback to free provider
-            # if self.provider_manager.current_provider != ProviderType.FREE:
-            #     logger.info("Falling back to free provider")
-            #     try:
-            #         free_provider = self.provider_manager.get_provider(ProviderType.FREE)
-            #         response = await free_provider.chat_completion(
-            #             messages=self.conversation_history,
-            #             model=None
-            #         )
-            #         self.conversation_history.append({'role': 'assistant', 'content': response})
-            #         return f"{response}\n\n*⚠️ Fallback to free provider due to error*"
-            #     except Exception as fallback_error:
-            #         logger.error(f"Fallback provider also failed: {fallback_error}")
-            #         # Return user-friendly error message
-            #         error_response = "❌ I'm having trouble processing your request right now. Please try again later or contact an administrator."
-            #         self.conversation_history.append({'role': 'assistant', 'content': error_response})
-            #         return error_response
-            # else:
-            #     # Already using free provider, return error
-            #     error_response = "❌ The free provider is currently unavailable. Please try again later."
-            #     self.conversation_history.append({'role': 'assistant', 'content': error_response})
-            #     return error_response
-    
     async def generate_image(self, prompt: str, model: Optional[str] = None) -> str:
         """Generate image using current provider"""
         provider = self.provider_manager.get_provider()
